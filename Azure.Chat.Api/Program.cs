@@ -1,5 +1,5 @@
 using Azure.Chat.Api;
-using Azure.Storage.Blobs;
+using Microsoft.AspNetCore.Mvc;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -7,39 +7,39 @@ builder.Services.AddOpenApi();
 
 builder.Services.AddScoped<IAzureChatIntegration, AzureChatIntegration>();
 builder.Services.AddScoped<IChatRepository, ChatRepository>();
-builder.Services.AddSingleton(new BlobServiceClient(builder.Configuration["BlobStorage:ConnectionString"]));
+builder.Services.AddScoped<IAzureBlobIntegration, AzureBlobIntegration>();
+builder.Services.AddAntiforgery();
 
 var app = builder.Build();
 
 app.MapOpenApi();
 app.UseHttpsRedirection();
+app.UseAntiforgery();
 
-app.MapPost("chat/message", async (SendMessageRequest request, IAzureChatIntegration chatIntegration) =>
+app.MapGet("chat/token", async (IAzureChatIntegration chatIntegration) =>
 {
-	chatIntegration.Initialize();
-	return chatIntegration.SendDirectMessage(request);
+	return chatIntegration.GetChatToken();
 });
 
-app.MapGet("chat/history/{threadId}", async (string threadId, IAzureChatIntegration chatIntegration) =>
+app.MapPost("chat/new/direct", async (NewDirectChatRequest request, IAzureChatIntegration chatIntegration) =>
 {
-	chatIntegration.Initialize();
-	return chatIntegration.GetChatHistory(threadId);
+	return chatIntegration.CreateNewDirectChat(request);
 });
 
-app.MapGet("chat/participants/{threadId}", async (string threadId, IAzureChatIntegration chatIntegration) =>
+app.MapPost("chat/new/group", async (NewGroupChatRequest request, IAzureChatIntegration chatIntegration) =>
 {
-	chatIntegration.Initialize();
-	return chatIntegration.GetChatParticipants(threadId);
+	return chatIntegration.CreateNewGroupChat(request);
 });
 
-app.MapGet("user/{userId}/status", async (int userId, IChatRepository repository) =>
+app.MapPost("chat/message", async ([FromForm] SendMessageRequest request, IAzureChatIntegration chatIntegration) =>
 {
-	throw new NotImplementedException(); // This endpoint if for the client to check the status of a user (online, offline, away, etc.) and update the UI accordingly.
-});
+	return chatIntegration.SendMessage(request);
+})
+.DisableAntiforgery();
 
-app.MapPost("chat/heartbeat", () => 
-{ 
-	throw new NotImplementedException(); // This endpoint is for the client to keep the connection alive and save the current status. 
+app.MapPost("chat/history", async (HistoryChatRequest request, IAzureChatIntegration chatIntegration) =>
+{
+	return chatIntegration.GetChatHistory(request);
 });
 
 app.Run();
