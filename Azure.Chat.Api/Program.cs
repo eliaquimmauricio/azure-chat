@@ -31,15 +31,26 @@ app.MapPost("chat/new/group", async (NewGroupChatRequest request, IAzureChatInte
 	return chatIntegration.CreateNewGroupChat(request);
 });
 
-app.MapPost("chat/message", async ([FromForm] SendMessageRequest request, IAzureChatIntegration chatIntegration) =>
+app.MapPost("chat/message/text", async ([FromForm] SendTextMessageRequest request, IAzureChatIntegration chatIntegration) =>
 {
-	return chatIntegration.SendMessage(request);
+	return chatIntegration.SendTextMessage(request);
+})
+.DisableAntiforgery();
+
+app.MapPost("chat/message/audio", async ([FromForm] SendAudioMessageRequest request, IAzureChatIntegration chatIntegration) =>
+{
+	return chatIntegration.SendAudioMessage(request);
 })
 .DisableAntiforgery();
 
 app.MapPost("chat/history", async (HistoryChatRequest request, IAzureChatIntegration chatIntegration) =>
 {
 	return chatIntegration.GetChatHistory(request);
+});
+
+app.MapPost("chat/threads", async (AvailableThreadsRequest request, IAzureChatIntegration chatIntegration) =>
+{
+	return chatIntegration.GetAvailableThreads(request);
 });
 
 app.Run();

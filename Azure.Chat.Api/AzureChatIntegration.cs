@@ -9,10 +9,11 @@ namespace Azure.Chat.Api
 	{
 		NewChatResponse CreateNewDirectChat(NewDirectChatRequest request);
 		NewChatResponse CreateNewGroupChat(NewGroupChatRequest request);
-		IEnumerable<MessageResponse> GetChatHistory(HistoryChatRequest request);
-		IEnumerable<Participant> GetChatParticipants(string threadId);
+		IEnumerable<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request);
+		IEnumerable<MessageResponse> GetChatHistory(HistoryChatRequest request);		
 		ChatTokenResponse GetChatToken();
-		MessageResponse SendMessage(SendMessageRequest request);
+		MessageResponse SendAudioMessage(SendAudioMessageRequest request);
+		MessageResponse SendTextMessage(SendTextMessageRequest request);
 	}
 
 	public class AzureChatIntegration(
@@ -68,9 +69,23 @@ namespace Azure.Chat.Api
 
 			var destinationUser = GetCommunicationUserIdentifier(communicationIdentityClient, request.DestinationUserId);
 
-			ChatParticipant participantA = new(currentUser);
+			ChatParticipant participantA = new(currentUser)
+			{
+				DisplayName = repository.GetUserName(currentUserId),
+				Metadata =
+				{
+					["userId"] = currentUserId.ToString()
+				}
+			};
 
-			ChatParticipant participantB = new(destinationUser);
+			ChatParticipant participantB = new(destinationUser)
+			{
+				DisplayName = repository.GetUserName(request.DestinationUserId),
+				Metadata =
+				{
+					["userId"] = request.DestinationUserId.ToString()
+				}
+			};
 
 			List<ChatParticipant> participants = [participantA, participantB];
 
@@ -111,7 +126,7 @@ namespace Azure.Chat.Api
 			return new NewChatResponse { ThreadId = threadId };
 		}
 
-		public MessageResponse SendMessage(SendMessageRequest request)
+		public MessageResponse SendTextMessage(SendTextMessageRequest request)
 		{
 			if (string.IsNullOrEmpty(request.ChatTokenId))
 				throw new InvalidOperationException("Chat token is required to create a new group chat.");
@@ -129,7 +144,7 @@ namespace Azure.Chat.Api
 
 			if (request.Attachments is not null)
 			{
-				foreach (var attachment in request.Attachments)
+				foreach (var attachment in request.Attachments) //ToDo: Consider parallel upload for better performance
 				{
 					var uploadedFile = azureBlobIntegration.Upload("chat-attachments", attachment);
 					uploadedFiles.Add(uploadedFile);
@@ -143,8 +158,49 @@ namespace Azure.Chat.Api
 				MessageType = ChatMessageType.Text,
 				Metadata =
 				{
+					["type"] = "text",
 					["userId"] = currentUserId.ToString(),
 					["attachments"] = JsonConvert.SerializeObject(uploadedFiles)
+				}
+			};
+
+			var chatClient = new ChatClient(new Uri(endpoint), new CommunicationTokenCredential(request.ChatTokenId));
+
+			var chatThreadClient = chatClient.GetChatThreadClient(request.ThreadId);
+
+			var sendMessageResult = chatThreadClient.SendMessage(options);
+
+			var message = chatThreadClient.GetMessage(sendMessageResult.Value.Id);
+
+			return MessageResponse.FromChatMessage(message);
+		}
+
+		public MessageResponse SendAudioMessage(SendAudioMessageRequest request)
+		{
+			if (string.IsNullOrEmpty(request.ChatTokenId))
+				throw new InvalidOperationException("Chat token is required to create a new group chat.");
+
+			if (string.IsNullOrEmpty(request.ThreadId))
+				throw new InvalidOperationException("Thread ID is required to send a message.");
+
+			if (request.AudioFile.Length > 10485760)
+				throw new InvalidOperationException("Audio file must be less than 10 MB.");
+
+			if (request.AudioFile.ContentType != "audio/mpeg")
+				throw new InvalidOperationException("Only MP3 audio format are supported.");
+
+			var uploadedFile = azureBlobIntegration.Upload("chat-audio-messages", request.AudioFile);
+
+			var options = new SendChatMessageOptions
+			{
+				Content = string.Empty,
+				SenderDisplayName = repository.GetUserName(currentUserId),
+				Metadata =
+				{
+					["type"] = "audio",
+					["userId"] = currentUserId.ToString(),
+					["audio"] = uploadedFile.Link,
+					["mime"] = "audio/mpeg"
 				}
 			};
 
@@ -175,9 +231,36 @@ namespace Azure.Chat.Api
 			return messages.Select(MessageResponse.FromChatMessage);
 		}
 
-		public IEnumerable<Participant> GetChatParticipants(string threadId)
+		public IEnumerable<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request)
 		{
-			throw new NotImplementedException();
+			if (string.IsNullOrEmpty(request.ChatTokenId))
+				throw new InvalidOperationException("Chat token is required to create a new group chat.");
+
+			var chatClient = new ChatClient(new Uri(endpoint), new CommunicationTokenCredential(request.ChatTokenId));
+
+			var chatThreads = chatClient.GetChatThreads();
+
+			List<AvailableThreadsResponse> result = new();
+
+			foreach (var chatThread in chatThreads)
+			{
+				var chatThreadClient = chatClient.GetChatThreadClient(chatThread.Id);
+				var participants = chatThreadClient.GetParticipants();
+
+				result.Add(new AvailableThreadsResponse
+				{
+					ThreadId = chatThread.Id,
+					LastMessageReceivedOn = chatThread.LastMessageReceivedOn,
+					ThreadType = participants.Count() > 2 ? ChatThreadType.Group : ChatThreadType.Direct,
+					Participants = participants.Select(p => new Participant
+					{
+						UserId = p.Metadata.ContainsKey("userId") ? int.Parse(p.Metadata["userId"]) : 0,
+						DisplayName = p.DisplayName
+					})
+				});
+			}
+
+			return result;
 		}
 	}
 
@@ -216,12 +299,21 @@ namespace Azure.Chat.Api
 		public required List<int> ParticipantUserIds { get; set; }		
 	}
 
-	public class SendMessageRequest
+	public abstract class SendMessageRequest
 	{
 		public required string ChatTokenId { get; set; }
 		public required string ThreadId { get; set; }
+	}
+
+	public class SendTextMessageRequest : SendMessageRequest
+	{
 		public required string Message { get; set; }
 		public IFormFileCollection? Attachments { get; set; }
+	}
+
+	public class SendAudioMessageRequest : SendMessageRequest
+	{
+		public required IFormFile AudioFile { get; set; }
 	}
 
 	public class HistoryChatRequest
@@ -255,8 +347,26 @@ namespace Azure.Chat.Api
 
 	public class Participant
 	{
-		public int UserId { get; set; }
-		public required string UserName { get; set; }
-		public required string ProfilePictureUrl { get; set; }
+		public required int UserId { get; set; }
+		public required string DisplayName { get; set; }
+	}
+
+	public class AvailableThreadsRequest
+	{
+		public required string ChatTokenId { get; set; }
+	}
+
+	public enum ChatThreadType
+	{
+		Direct,
+		Group
+	}
+
+	public class AvailableThreadsResponse
+	{
+		public required string ThreadId { get; set; }
+		public DateTimeOffset? LastMessageReceivedOn { get; set; }
+		public required ChatThreadType ThreadType { get; set; }
+		public required IEnumerable<Participant> Participants { get; set; }
 	}
 }
