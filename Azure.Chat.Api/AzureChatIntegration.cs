@@ -2,6 +2,7 @@
 using Azure.Communication.Chat;
 using Azure.Communication.Identity;
 using Newtonsoft.Json;
+using System.ComponentModel.DataAnnotations;
 
 namespace Azure.Chat.Api
 {
@@ -9,8 +10,8 @@ namespace Azure.Chat.Api
 	{
 		NewChatResponse CreateNewDirectChat(NewDirectChatRequest request);
 		NewChatResponse CreateNewGroupChat(NewGroupChatRequest request);
-		IEnumerable<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request);
-		IEnumerable<MessageResponse> GetChatHistory(HistoryChatRequest request);		
+		PaginatedResponse<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request);
+		PaginatedResponse<MessageResponse> GetChatHistory(HistoryChatRequest request);		
 		ChatTokenResponse GetChatToken();
 		MessageResponse SendAudioMessage(SendAudioMessageRequest request);
 		MessageResponse SendTextMessage(SendTextMessageRequest request);
@@ -215,7 +216,7 @@ namespace Azure.Chat.Api
 			return MessageResponse.FromChatMessage(message);
 		}
 
-		public IEnumerable<MessageResponse> GetChatHistory(HistoryChatRequest request)
+		public PaginatedResponse<MessageResponse> GetChatHistory(HistoryChatRequest request)
 		{
 			if (string.IsNullOrEmpty(request.ChatTokenId))
 				throw new InvalidOperationException("Chat token is required to create a new group chat.");
@@ -223,26 +224,33 @@ namespace Azure.Chat.Api
 			if (string.IsNullOrEmpty(request.ThreadId))
 				throw new InvalidOperationException("Thread ID is required to send a message.");
 
+			if (request.PageSize < 0 || request.PageSize > 20)
+				throw new InvalidOperationException("PageSize must be between 0 and 20.");
+
 			var chatClient = new ChatClient(new Uri(endpoint), new CommunicationTokenCredential(request.ChatTokenId));
 
 			var chatThreadClient = chatClient.GetChatThreadClient(request.ThreadId);
-			var messages = chatThreadClient.GetMessages();
+			var messages = chatThreadClient.GetMessages().AsPages(request.ContinuationToken, request.PageSize).First();
 
-			return messages.Select(MessageResponse.FromChatMessage);
+			return new PaginatedResponse<MessageResponse>
+			{
+				Items = messages.Values.Select(MessageResponse.FromChatMessage),
+				ContinuationToken = messages.ContinuationToken
+			};
 		}
 
-		public IEnumerable<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request)
+		public PaginatedResponse<AvailableThreadsResponse> GetAvailableThreads(AvailableThreadsRequest request)
 		{
 			if (string.IsNullOrEmpty(request.ChatTokenId))
 				throw new InvalidOperationException("Chat token is required to create a new group chat.");
 
 			var chatClient = new ChatClient(new Uri(endpoint), new CommunicationTokenCredential(request.ChatTokenId));
 
-			var chatThreads = chatClient.GetChatThreads();
+			var chatThreads = chatClient.GetChatThreads().AsPages(request.ContinuationToken, request.PageSize).First();
 
 			List<AvailableThreadsResponse> result = new();
 
-			foreach (var chatThread in chatThreads)
+			foreach (var chatThread in chatThreads.Values)
 			{
 				var chatThreadClient = chatClient.GetChatThreadClient(chatThread.Id);
 				var participants = chatThreadClient.GetParticipants();
@@ -260,11 +268,28 @@ namespace Azure.Chat.Api
 				});
 			}
 
-			return result;
+			return new PaginatedResponse<AvailableThreadsResponse>
+			{
+				Items = result,
+				ContinuationToken = chatThreads.ContinuationToken
+			};
 		}
 	}
 
 	// These classes are for demonstration purposes and may not represent the actual data models used in a production application.
+
+	public abstract class PaginatedRequest
+	{
+		public string? ContinuationToken { get; set; }
+
+		public int PageSize { get; set; } = 20;
+	}
+
+	public class PaginatedResponse<T> where T : class
+	{
+		public string? ContinuationToken { get; set; }
+		public IEnumerable<T> Items { get; set; } = [];
+	}
 
 	public class Chat
 	{
@@ -316,7 +341,7 @@ namespace Azure.Chat.Api
 		public required IFormFile AudioFile { get; set; }
 	}
 
-	public class HistoryChatRequest
+	public class HistoryChatRequest : PaginatedRequest
 	{
 		public required string ChatTokenId { get; set; }
 		public required string ThreadId { get; set; }
@@ -351,7 +376,7 @@ namespace Azure.Chat.Api
 		public required string DisplayName { get; set; }
 	}
 
-	public class AvailableThreadsRequest
+	public class AvailableThreadsRequest : PaginatedRequest
 	{
 		public required string ChatTokenId { get; set; }
 	}
