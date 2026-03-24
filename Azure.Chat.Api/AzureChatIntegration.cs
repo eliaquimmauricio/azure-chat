@@ -254,11 +254,26 @@ namespace Azure.Chat.Api
 			{
 				var chatThreadClient = chatClient.GetChatThreadClient(chatThread.Id);
 				var participants = chatThreadClient.GetParticipants();
+				var lastMessage = chatThreadClient.GetMessages().FirstOrDefault();
+
+				MessageType? lastMessageType = null;
+
+				if (lastMessage?.Metadata.ContainsKey("type") == true)
+				{
+					lastMessageType = lastMessage.Metadata["type"] switch
+					{
+						"text" => MessageType.Text,
+						"audio" => MessageType.Audio,
+						_ => null
+					};
+				}
 
 				result.Add(new AvailableThreadsResponse
 				{
 					ThreadId = chatThread.Id,
 					LastMessageReceivedOn = chatThread.LastMessageReceivedOn,
+					LastMessageType = lastMessageType,
+					LastMessage = lastMessageType == MessageType.Text ? lastMessage?.Content.Message : null,
 					ThreadType = participants.Count() > 2 ? ChatThreadType.Group : ChatThreadType.Direct,
 					Participants = participants.Select(p => new Participant
 					{
@@ -381,6 +396,12 @@ namespace Azure.Chat.Api
 		public required string ChatTokenId { get; set; }
 	}
 
+	public enum MessageType
+	{
+		Text,
+		Audio
+	}
+
 	public enum ChatThreadType
 	{
 		Direct,
@@ -390,6 +411,8 @@ namespace Azure.Chat.Api
 	public class AvailableThreadsResponse
 	{
 		public required string ThreadId { get; set; }
+		public MessageType? LastMessageType { get; set; }
+		public string? LastMessage { get; set;  }
 		public DateTimeOffset? LastMessageReceivedOn { get; set; }
 		public required ChatThreadType ThreadType { get; set; }
 		public required IEnumerable<Participant> Participants { get; set; }
